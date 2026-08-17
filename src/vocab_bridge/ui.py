@@ -8,7 +8,6 @@ from .api import MaiMemoAuthError, MaiMemoClient, MaiMemoError, VocabularyNotFou
 from .config import get_token, save_token
 from .scheduler import SmartStudyRouter
 from .text import looks_like_single_word, normalize_selection
-from .wordbook import CurrentWordbook
 
 
 class TokenDialog(tk.Toplevel):
@@ -94,12 +93,10 @@ class CaptureDialog(tk.Toplevel):
 
     @staticmethod
     def _initial_hint(text: str) -> str:
-        wordbook = CurrentWordbook()
-        book_hint = "已启用当前词书过滤。" if wordbook.configured else "当前词书过滤未配置。"
         if not text:
-            return f"没有读取到选中文字，可直接输入。{book_hint}"
+            return "没有读取到选中文字，可直接输入。"
         if looks_like_single_word(text):
-            return f"程序会自动判断：已在记忆规划→提前复习；新词→加入记忆。{book_hint}"
+            return "程序会自动判断：已在记忆规划→提前复习；新词→加入记忆。"
         return "当前选择包含空格或非单词字符，请先编辑成一个英文单词再提交。"
 
     def _set_busy(self, busy: bool):
