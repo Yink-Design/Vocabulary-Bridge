@@ -117,8 +117,12 @@ class SmartStudyRouter:
             self.client.advance_word(word)
             return ProcessResult("advanced", "✓ 已在记忆规划，已提前到今天复习")
 
-        # For a new word, advance=True guarantees it is brought into the active study flow now.
-        self.client.add_word(word, advance=True)
+        # advance=True brings a genuinely new word into today's active study flow.
+        result = self.client.add_word(word, advance=True)
+        if result.added_count == 0:
+            # The plan may have changed between the record query and add request.
+            self.client.advance_word(word)
+            return ProcessResult("advanced", "✓ 单词已在记忆规划，已提前到今天复习")
         return ProcessResult("added", "✓ 新词，已加入记忆并安排今天新学")
 
     def flush_due(self) -> int:
@@ -138,7 +142,9 @@ class SmartStudyRouter:
             if self.client.is_in_study_plan(word):
                 self.client.advance_word(word)
             else:
-                self.client.add_word(word, advance=True)
+                result = self.client.add_word(word, advance=True)
+                if result.added_count == 0:
+                    self.client.advance_word(word)
             self.pending.remove(word)
             processed += 1
         return processed
