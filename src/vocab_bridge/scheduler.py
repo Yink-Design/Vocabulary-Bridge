@@ -7,7 +7,6 @@ from pathlib import Path
 
 from .api import MaiMemoClient
 from .config import app_data_dir
-from .wordbook import CurrentWordbook
 
 PENDING_PATH = app_data_dir() / "pending_words.json"
 
@@ -87,22 +86,12 @@ class PendingStore:
 
 
 class SmartStudyRouter:
-    def __init__(
-        self,
-        client: MaiMemoClient,
-        *,
-        wordbook: CurrentWordbook | None = None,
-        pending: PendingStore | None = None,
-    ):
+    def __init__(self, client: MaiMemoClient, *, pending: PendingStore | None = None):
         self.client = client
-        self.wordbook = wordbook or CurrentWordbook()
         self.pending = pending or PendingStore()
 
     def process(self, word: str) -> ProcessResult:
         word = word.strip()
-        if self.wordbook.configured and not self.wordbook.contains(word):
-            return ProcessResult("outside_wordbook", "为词书外单词", None)
-
         existing = self.client.is_in_study_plan(word)
         progress = self.client.get_study_progress()
         decision = decide_route(existing, progress.is_complete)
@@ -117,12 +106,12 @@ class SmartStudyRouter:
             self.client.advance_word(word)
             return ProcessResult("advanced", "✓ 已在记忆规划，已提前到今天复习")
 
-        # advance=True brings a genuinely new word into today's active study flow.
+        # For a new word, advance=True brings it into the active study flow now.
         result = self.client.add_word(word, advance=True)
         if result.added_count == 0:
-            # The plan may have changed between the record query and add request.
+            # The plan may have changed between the status query and add request.
             self.client.advance_word(word)
-            return ProcessResult("advanced", "✓ 单词已在记忆规划，已提前到今天复习")
+            return ProcessResult("advanced", "✓ 已在记忆规划，已提前到今天复习")
         return ProcessResult("added", "✓ 新词，已加入记忆并安排今天新学")
 
     def flush_due(self) -> int:
@@ -136,9 +125,6 @@ class SmartStudyRouter:
 
         processed = 0
         for word in words:
-            if self.wordbook.configured and not self.wordbook.contains(word):
-                self.pending.remove(word)
-                continue
             if self.client.is_in_study_plan(word):
                 self.client.advance_word(word)
             else:
