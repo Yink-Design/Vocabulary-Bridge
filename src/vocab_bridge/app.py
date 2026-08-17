@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import threading
 import tkinter as tk
+from tkinter import filedialog, messagebox
 
 from PIL import Image, ImageDraw
 import pystray
 from pynput import keyboard
 
+from .api import MaiMemoAuthError, MaiMemoClient
 from .capture import SelectionCapture
 from .config import AppConfig, get_token
+from .scheduler import SmartStudyRouter
 from .ui import CaptureDialog, TokenDialog
+from .wordbook import import_wordbook_file
 
 
 class VocabularyBridgeApp:
@@ -31,6 +35,8 @@ class VocabularyBridgeApp:
         self._start_tray()
         if not get_token():
             self.root.after(300, self.open_token_dialog)
+        else:
+            self.root.after(600, self._flush_pending_async)
         self.root.mainloop()
 
     def _start_hotkey(self):
@@ -54,16 +60,59 @@ class VocabularyBridgeApp:
         threading.Thread(target=worker, daemon=True).start()
 
     def open_token_dialog(self):
-        TokenDialog(self.root)
+        TokenDialog(self.root, on_saved=self._flush_pending_async)
+
+    def _import_wordbook(self):
+        path = filedialog.askopenfilename(
+            parent=self.root,
+            title="导入当前词书词表",
+            filetypes=[
+                ("词表文件", "*.txt *.csv"),
+                ("Text", "*.txt"),
+                ("CSV", "*.csv"),
+                ("All files", "*.*"),
+            ],
+        )
+        if not path:
+            return
+        try:
+            count = import_wordbook_file(path)
+        except Exception as exc:
+            messagebox.showerror("导入失败", str(exc), parent=self.root)
+            return
+        messagebox.showinfo(
+            "当前词书已更新",
+            f"已导入 {count} 个单词。\n从现在起，词书外单词会被拦截并显示“为词书外单词”。",
+            parent=self.root,
+        )
+
+    def _flush_pending_async(self):
+        token = get_token()
+        if not token:
+            return
+
+        def worker():
+            try:
+                count = SmartStudyRouter(MaiMemoClient(token)).flush_due()
+                if count and self.tray:
+                    self.tray.notify(f"已同步 {count} 个昨日顺延单词", "Vocabulary Bridge")
+            except MaiMemoAuthError:
+                self.root.after(0, self.open_token_dialog)
+            except Exception:
+                # Pending items remain on disk and will be retried later.
+                return
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _start_tray(self):
         icon_image = self._make_icon()
         self.tray = pystray.Icon(
             "IELTSVocabularyBridge",
             icon_image,
-            "IELTS Vocabulary Bridge",
+            "IELTS Vocabulary Bridge · F8 捕获",
             menu=pystray.Menu(
-                pystray.MenuItem("捕获选中单词", lambda _icon, _item: self.root.after(0, self.capture_selected_word)),
+                pystray.MenuItem("捕获选中单词 (F8)", lambda _icon, _item: self.root.after(0, self.capture_selected_word)),
+                pystray.MenuItem("导入当前词书词表", lambda _icon, _item: self.root.after(0, self._import_wordbook)),
                 pystray.MenuItem("配置墨墨 API Token", lambda _icon, _item: self.root.after(0, self.open_token_dialog)),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("退出", lambda _icon, _item: self.root.after(0, self.quit)),
