@@ -29,6 +29,17 @@ class AddResult:
     advance: bool
 
 
+@dataclass
+class StudyProgress:
+    finished: int
+    total: int
+    study_time: int = 0
+
+    @property
+    def is_complete(self) -> bool:
+        return self.finished >= self.total
+
+
 class MaiMemoClient:
     def __init__(self, token: str, timeout: int = DEFAULT_TIMEOUT):
         self.token = token.strip()
@@ -86,6 +97,43 @@ class MaiMemoClient:
         if not voc_id:
             raise VocabularyNotFoundError(f'墨墨词库中没有找到“{spelling}”。')
         return str(voc_id)
+
+    def get_study_progress(self) -> StudyProgress:
+        data = self._request(
+            "POST",
+            "/api/v1/study/get_study_progress",
+            json={},
+        )
+        progress = data.get("progress") or {}
+        return StudyProgress(
+            finished=int(progress.get("finished", 0)),
+            total=int(progress.get("total", 0)),
+            study_time=int(progress.get("study_time", 0)),
+        )
+
+    def query_study_record(self, spelling: str) -> dict[str, Any] | None:
+        def query(value: str) -> dict[str, Any] | None:
+            data = self._request(
+                "POST",
+                "/api/v1/study/query_study_records",
+                json={
+                    "voc_ids": [],
+                    "spellings": [value],
+                    "as_count": False,
+                    "limit": 1,
+                },
+            )
+            records = data.get("records") or []
+            first = records[0] if records else None
+            return first if isinstance(first, dict) else None
+
+        record = query(spelling)
+        if record is None and spelling.lower() != spelling:
+            record = query(spelling.lower())
+        return record
+
+    def is_in_study_plan(self, spelling: str) -> bool:
+        return self.query_study_record(spelling) is not None
 
     def add_word(self, spelling: str, *, advance: bool = False) -> AddResult:
         voc_id = self.resolve_vocabulary_id(spelling)
