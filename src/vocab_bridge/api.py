@@ -84,6 +84,15 @@ class MaiMemoClient:
             return payload["data"]
         return payload if isinstance(payload, dict) else {}
 
+    def validate_token(self) -> bool:
+        """Validate the token with a read-only vocabulary request."""
+        self._request(
+            "POST",
+            "/api/v1/vocabulary/query",
+            json={"spellings": ["apple"], "ids": []},
+        )
+        return True
+
     def resolve_vocabulary(self, spelling: str) -> ResolvedVocabulary:
         candidates = spelling_candidates(spelling)
         if not candidates:
