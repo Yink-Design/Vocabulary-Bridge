@@ -10,6 +10,7 @@ import keyring
 APP_NAME = "IELTSVocabularyBridge"
 KEYRING_SERVICE = "IELTS Vocabulary Bridge / MaiMemo"
 KEYRING_USER = "api-token"
+LEGACY_HOTKEY = "<ctrl>+<alt>+m"
 
 
 def app_data_dir() -> Path:
@@ -36,7 +37,11 @@ class AppConfig:
             return cls()
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            return cls(**{k: v for k, v in data.items() if k in cls.__annotations__})
+            if data.get("hotkey") == LEGACY_HOTKEY:
+                data["hotkey"] = "<f8>"
+            config = cls(**{k: v for k, v in data.items() if k in cls.__annotations__})
+            config.save()
+            return config
         except Exception:
             return cls()
 
