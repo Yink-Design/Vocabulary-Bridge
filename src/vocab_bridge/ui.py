@@ -3,15 +3,18 @@ from __future__ import annotations
 import threading
 import tkinter as tk
 from tkinter import messagebox
+import webbrowser
 
 from .api import MaiMemoAuthError, MaiMemoClient, MaiMemoError, VocabularyNotFoundError
 from .config import get_token, save_token
 from .scheduler import SmartStudyRouter
 from .text import looks_like_single_word, normalize_selection
 
+TOKEN_PORTAL_URL = "https://open.maimemo.com/open/api/v1/tokens/openapi"
+
 
 class TokenDialog(tk.Toplevel):
-    def __init__(self, master: tk.Misc, on_saved=None):
+    def __init__(self, master: tk.Misc, on_saved=None, *, open_portal: bool = False):
         super().__init__(master)
         self.on_saved = on_saved
         self.title("Vocabulary Bridge · API Token")
@@ -24,9 +27,9 @@ class TokenDialog(tk.Toplevel):
         tk.Label(body, text="墨墨 Open API Token", font=("Segoe UI", 11, "bold")).pack(anchor="w")
         tk.Label(
             body,
-            text="Token 仅保存到 Windows Credential Manager，不会写入项目文件。",
+            text="Token 仅保存到 Windows Credential Manager。失效后可打开墨墨官方领取页，登录并复制新 Token。",
             justify="left",
-            wraplength=430,
+            wraplength=460,
         ).pack(anchor="w", pady=(4, 10))
         self.entry = tk.Entry(body, width=62, show="•")
         self.entry.pack(fill="x")
@@ -34,10 +37,18 @@ class TokenDialog(tk.Toplevel):
 
         row = tk.Frame(body)
         row.pack(fill="x", pady=(12, 0))
+        tk.Button(row, text="打开官方领取页", width=15, command=self._open_portal).pack(side="left")
         tk.Button(row, text="取消", width=10, command=self.destroy).pack(side="right")
-        tk.Button(row, text="保存", width=12, command=self._save).pack(side="right", padx=(0, 8))
+        tk.Button(row, text="保存并验证", width=12, command=self._save).pack(side="right", padx=(0, 8))
         self.bind("<Return>", lambda _e: self._save())
         self._place_center()
+
+        if open_portal:
+            self.after(250, self._open_portal)
+
+    @staticmethod
+    def _open_portal():
+        webbrowser.open(TOKEN_PORTAL_URL)
 
     def _save(self):
         token = self.entry.get().strip()
@@ -51,7 +62,7 @@ class TokenDialog(tk.Toplevel):
 
     def _place_center(self):
         self.update_idletasks()
-        width, height = 500, 180
+        width, height = 520, 200
         x = (self.winfo_screenwidth() - width) // 2
         y = (self.winfo_screenheight() - height) // 2
         self.geometry(f"{width}x{height}+{x}+{y}")
@@ -70,10 +81,10 @@ class CaptureDialog(tk.Toplevel):
         body.pack(fill="both", expand=True)
         tk.Label(body, text="捕获到的词", font=("Segoe UI", 9)).pack(anchor="w")
         self.word_var = tk.StringVar(value=text)
-        entry = tk.Entry(body, textvariable=self.word_var, width=38, font=("Segoe UI", 14))
-        entry.pack(fill="x", pady=(4, 6))
-        entry.select_range(0, "end")
-        entry.focus_set()
+        self.entry = tk.Entry(body, textvariable=self.word_var, width=38, font=("Segoe UI", 14))
+        self.entry.pack(fill="x", pady=(4, 6))
+        self.entry.select_range(0, "end")
+        self.entry.focus_set()
 
         self.hint_var = tk.StringVar(value=self._initial_hint(text))
         self.hint = tk.Label(body, textvariable=self.hint_var, justify="left", anchor="w", wraplength=410)
@@ -114,12 +125,64 @@ class CaptureDialog(tk.Toplevel):
         token = get_token()
         if not token:
             if self.on_need_token:
-                self.on_need_token()
+                self.on_need_token(True)
             self.status_var.set("请先配置墨墨 API Token。")
             return
 
         self._set_busy(True)
-        self.status_var.set("正在查询学习状态…")
+        self.status_var.set("正在核对单词…")
+
+        def worker():
+            try:
+                client = MaiMemoClient(token)
+                resolved = client.resolve_vocabulary(word)
+                if resolved.spelling.lower() != word.lower():
+                    self.after(
+                        0,
+                        lambda: self._confirm_fallback(word, resolved.spelling),
+                    )
+                    return
+                result = SmartStudyRouter(client).process(resolved.spelling)
+                self.after(0, lambda: self._result(result.message, result.close_after_ms))
+            except MaiMemoAuthError as exc:
+                message = str(exc)
+                self.after(0, lambda msg=message: self._error(msg, need_token=True))
+            except (VocabularyNotFoundError, MaiMemoError) as exc:
+                message = str(exc)
+                self.after(0, lambda msg=message: self._error(msg))
+            except Exception as exc:
+                message = f"同步失败：{exc}"
+                self.after(0, lambda msg=message: self._error(msg))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _confirm_fallback(self, original: str, resolved: str):
+        self._set_busy(False)
+        answer = messagebox.askyesno(
+            "确认词形还原",
+            f"您想加入的词是不是：{resolved}？\n\n原划词：{original}\n\n选择“是”将按 {resolved} 继续；选择“否”可手动修改。",
+            parent=self,
+        )
+        if answer:
+            self.word_var.set(resolved)
+            self.status_var.set(f"已确认：{original} → {resolved}，正在同步…")
+            self._sync_confirmed(resolved)
+            return
+
+        self.word_var.set(original)
+        self.status_var.set("请在上方手动输入正确单词，再点击“按规则同步”。")
+        self.entry.focus_set()
+        self.entry.select_range(0, "end")
+
+    def _sync_confirmed(self, word: str):
+        token = get_token()
+        if not token:
+            if self.on_need_token:
+                self.on_need_token(True)
+            self.status_var.set("请先配置墨墨 API Token。")
+            return
+
+        self._set_busy(True)
 
         def worker():
             try:
@@ -147,7 +210,7 @@ class CaptureDialog(tk.Toplevel):
         self._set_busy(False)
         self.status_var.set(message)
         if need_token and self.on_need_token:
-            self.on_need_token()
+            self.on_need_token(True)
 
     def _place_near_pointer(self):
         self.update_idletasks()
