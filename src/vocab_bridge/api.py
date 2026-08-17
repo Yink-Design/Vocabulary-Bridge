@@ -5,6 +5,8 @@ from typing import Any
 
 import requests
 
+from .morphology import spelling_candidates
+
 BASE_URL = "https://open.maimemo.com/open/"
 DEFAULT_TIMEOUT = 15
 
@@ -21,9 +23,17 @@ class VocabularyNotFoundError(MaiMemoError):
     pass
 
 
+@dataclass(frozen=True)
+class ResolvedVocabulary:
+    requested_spelling: str
+    spelling: str
+    vocabulary_id: str
+
+
 @dataclass
 class AddResult:
     word: str
+    resolved_word: str
     vocabulary_id: str
     added_count: int
     advance: bool
@@ -74,29 +84,44 @@ class MaiMemoClient:
             return payload["data"]
         return payload if isinstance(payload, dict) else {}
 
-    def resolve_vocabulary_id(self, spelling: str) -> str:
+    def resolve_vocabulary(self, spelling: str) -> ResolvedVocabulary:
+        candidates = spelling_candidates(spelling)
+        if not candidates:
+            raise VocabularyNotFoundError(f'墨墨词库中没有找到“{spelling}”。')
+
         data = self._request(
             "POST",
             "/api/v1/vocabulary/query",
-            json={"spellings": [spelling], "ids": []},
+            json={"spellings": candidates, "ids": []},
         )
         vocabularies = data.get("voc") or []
-        if not vocabularies:
-            lower = spelling.lower()
-            if lower != spelling:
-                data = self._request(
-                    "POST",
-                    "/api/v1/vocabulary/query",
-                    json={"spellings": [lower], "ids": []},
-                )
-                vocabularies = data.get("voc") or []
-        if not vocabularies:
-            raise VocabularyNotFoundError(f'墨墨词库中没有找到“{spelling}”。')
-        first = vocabularies[0]
-        voc_id = first.get("id") if isinstance(first, dict) else None
-        if not voc_id:
-            raise VocabularyNotFoundError(f'墨墨词库中没有找到“{spelling}”。')
-        return str(voc_id)
+
+        by_spelling: dict[str, dict[str, Any]] = {}
+        for item in vocabularies:
+            if not isinstance(item, dict):
+                continue
+            item_spelling = str(item.get("spelling") or "").strip().lower()
+            if item_spelling:
+                by_spelling[item_spelling] = item
+
+        for candidate in candidates:
+            item = by_spelling.get(candidate.lower())
+            if not item:
+                continue
+            voc_id = item.get("id")
+            if not voc_id:
+                continue
+            resolved_spelling = str(item.get("spelling") or candidate)
+            return ResolvedVocabulary(
+                requested_spelling=spelling,
+                spelling=resolved_spelling,
+                vocabulary_id=str(voc_id),
+            )
+
+        raise VocabularyNotFoundError(f'墨墨词库中没有找到“{spelling}”及其常见原形。')
+
+    def resolve_vocabulary_id(self, spelling: str) -> str:
+        return self.resolve_vocabulary(spelling).vocabulary_id
 
     def get_study_progress(self) -> StudyProgress:
         data = self._request(
@@ -112,49 +137,45 @@ class MaiMemoClient:
         )
 
     def query_study_record(self, spelling: str) -> dict[str, Any] | None:
-        def query(value: str) -> dict[str, Any] | None:
-            data = self._request(
-                "POST",
-                "/api/v1/study/query_study_records",
-                json={
-                    "voc_ids": [],
-                    "spellings": [value],
-                    "as_count": False,
-                    "limit": 1,
-                },
-            )
-            records = data.get("records") or []
-            first = records[0] if records else None
-            return first if isinstance(first, dict) else None
-
-        record = query(spelling)
-        if record is None and spelling.lower() != spelling:
-            record = query(spelling.lower())
-        return record
+        resolved = self.resolve_vocabulary(spelling)
+        data = self._request(
+            "POST",
+            "/api/v1/study/query_study_records",
+            json={
+                "voc_ids": [resolved.vocabulary_id],
+                "spellings": [],
+                "as_count": False,
+                "limit": 1,
+            },
+        )
+        records = data.get("records") or []
+        first = records[0] if records else None
+        return first if isinstance(first, dict) else None
 
     def is_in_study_plan(self, spelling: str) -> bool:
         return self.query_study_record(spelling) is not None
 
     def add_word(self, spelling: str, *, advance: bool = False) -> AddResult:
-        voc_id = self.resolve_vocabulary_id(spelling)
+        resolved = self.resolve_vocabulary(spelling)
         data = self._request(
             "POST",
             "/api/v1/study/add_words",
-            json={"words": [{"id": voc_id}], "advance": bool(advance)},
+            json={"words": [{"id": resolved.vocabulary_id}], "advance": bool(advance)},
         )
         return AddResult(
             word=spelling,
-            vocabulary_id=voc_id,
+            resolved_word=resolved.spelling,
+            vocabulary_id=resolved.vocabulary_id,
             added_count=int(data.get("added_count", 0)),
             advance=bool(advance),
         )
 
     def advance_word(self, spelling: str) -> int:
-        voc_id = self.resolve_vocabulary_id(spelling)
+        resolved = self.resolve_vocabulary(spelling)
         data = self._request(
             "POST",
             "/api/v1/study/advance_study",
-            json={"voc_ids": [voc_id]},
+            json={"voc_ids": [resolved.vocabulary_id]},
         )
         return int(data.get("advanced_count", 0))
 
