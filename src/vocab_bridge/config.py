@@ -12,17 +12,21 @@ KEYRING_SERVICE = "IELTS Vocabulary Bridge / MaiMemo"
 KEYRING_USER = "api-token"
 
 
-def _config_path() -> Path:
+def app_data_dir() -> Path:
     root = Path(os.environ.get("APPDATA", Path.home()))
     folder = root / APP_NAME
     folder.mkdir(parents=True, exist_ok=True)
-    return folder / "config.json"
+    return folder
+
+
+def _config_path() -> Path:
+    return app_data_dir() / "config.json"
 
 
 @dataclass
 class AppConfig:
-    hotkey: str = "<ctrl>+<alt>+m"
-    capture_delay_ms: int = 140
+    hotkey: str = "<f8>"
+    capture_delay_ms: int = 100
     restore_clipboard: bool = True
 
     @classmethod
