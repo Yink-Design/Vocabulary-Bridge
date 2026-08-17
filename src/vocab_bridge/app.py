@@ -27,14 +27,15 @@ class VocabularyBridgeApp:
         self.listener: keyboard.GlobalHotKeys | None = None
         self.tray: pystray.Icon | None = None
         self._capture_lock = threading.Lock()
+        self._token_dialog_open = False
 
     def run(self):
         self._start_hotkey()
         self._start_tray()
         if not get_token():
-            self.root.after(300, self.open_token_dialog)
+            self.root.after(300, lambda: self.open_token_dialog(False))
         else:
-            self.root.after(600, self._flush_pending_async)
+            self.root.after(500, self._validate_token_async)
         self.root.mainloop()
 
     def _start_hotkey(self):
@@ -57,8 +58,42 @@ class VocabularyBridgeApp:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def open_token_dialog(self):
-        TokenDialog(self.root, on_saved=self._flush_pending_async)
+    def open_token_dialog(self, open_portal: bool = False):
+        if self._token_dialog_open:
+            return
+        self._token_dialog_open = True
+        dialog = TokenDialog(
+            self.root,
+            on_saved=self._validate_token_async,
+            open_portal=open_portal,
+        )
+
+        def clear_flag():
+            self._token_dialog_open = False
+
+        dialog.bind("<Destroy>", lambda event: clear_flag() if event.widget is dialog else None)
+
+    def _validate_token_async(self):
+        token = get_token()
+        if not token:
+            self.root.after(0, lambda: self.open_token_dialog(False))
+            return
+
+        def worker():
+            try:
+                MaiMemoClient(token).validate_token()
+            except MaiMemoAuthError:
+                if self.tray:
+                    self.tray.notify("API Token 已失效，请领取并粘贴新 Token", "Vocabulary Bridge")
+                self.root.after(0, lambda: self.open_token_dialog(True))
+                return
+            except Exception:
+                # Network/server failures are not treated as token expiry.
+                return
+
+            self.root.after(0, self._flush_pending_async)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _flush_pending_async(self):
         token = get_token()
@@ -71,7 +106,7 @@ class VocabularyBridgeApp:
                 if count and self.tray:
                     self.tray.notify(f"已同步 {count} 个昨日顺延单词", "Vocabulary Bridge")
             except MaiMemoAuthError:
-                self.root.after(0, self.open_token_dialog)
+                self.root.after(0, lambda: self.open_token_dialog(True))
             except Exception:
                 # Pending items remain on disk and will be retried later.
                 return
@@ -86,7 +121,7 @@ class VocabularyBridgeApp:
             "IELTS Vocabulary Bridge · F8 捕获",
             menu=pystray.Menu(
                 pystray.MenuItem("捕获选中单词 (F8)", lambda _icon, _item: self.root.after(0, self.capture_selected_word)),
-                pystray.MenuItem("配置墨墨 API Token", lambda _icon, _item: self.root.after(0, self.open_token_dialog)),
+                pystray.MenuItem("配置墨墨 API Token", lambda _icon, _item: self.root.after(0, lambda: self.open_token_dialog(False))),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("退出", lambda _icon, _item: self.root.after(0, self.quit)),
             ),
