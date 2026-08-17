@@ -18,7 +18,22 @@
 - 今日学习任务尚未完成 → 加入学习规划，并用 `advance=true` 安排今天新学。
 - 今日学习任务已经完成 → 暂存到本地“明日队列”，第二天在今日任务尚未完成时自动加入并安排新学。
 
-程序不做词书归属判定。只要墨墨开放词库能够解析该单词，就按上述规则处理；如果墨墨词库中找不到该拼写，则提示未找到。
+程序不做词书归属判定。只要墨墨开放词库能够解析该单词，就按上述规则处理。
+
+### 3. 阅读正文里的词形变化
+
+网页正文经常出现复数、过去式、进行时等形式，而墨墨词库通常按词典原形收录。
+
+Vocabulary Bridge 会先查询你实际划到的拼写；只有原拼写查不到时，才生成少量常见原形候选，再交给墨墨词库确认。例如：
+
+- `lettuces` → `lettuce`
+- `strawberries` → `strawberry`
+- `studied` → `study`
+- `started` → `start`
+- `running` → `run`
+- `making` → `make`
+
+候选词不会仅凭本地规则直接写入学习计划。必须由墨墨 `/api/v1/vocabulary/query` 返回真实 vocabulary ID 后才会继续。
 
 ## 支持范围
 
@@ -40,6 +55,8 @@ F8
    ↓
 Vocabulary Bridge 小弹窗
    ↓ 确认
+原拼写 / 常见原形候选
+   ↓ 墨墨词库确认 vocabulary ID
 查询墨墨学习记录
    ↓
 今日学习进度
@@ -150,11 +167,15 @@ dist/IELTS-Vocabulary-Bridge.exe
 
 当前采用个人 Open API Token。收到 HTTP 401 时提示重新配置。后续计划接入 OIDC + refresh token。
 
+### 词形还原范围
+
+当前只处理阅读中最常见的一批英语词形变化，且最终必须由墨墨词库验证。非常规派生词或复杂词形仍可能需要在弹窗中手动改成原形。
+
 ## 隐私与安全
 
 - API Token 使用 Python `keyring` 保存，在 Windows 上进入 Credential Manager。
 - `.gitignore` 已排除 `.env` 等敏感文件。
-- 当前版本不会上传原句、网页地址或 PDF 内容；只向墨墨发送最终确认的单词。
+- 当前版本不会上传原句、网页地址或 PDF 内容；只向墨墨发送最终确认的单词或其经墨墨词库确认的原形。
 - 明日队列只保存在本机 `%APPDATA%`。
 
 ## Roadmap
@@ -163,6 +184,7 @@ dist/IELTS-Vocabulary-Bridge.exe
 - [x] `F8` 全局快捷键
 - [x] 自动判断加入记忆 / 提前复习
 - [x] 今日完成后顺延到明日
+- [x] 常见复数 / 时态词形回退
 - [x] Windows Credential Manager 保存 Token
 - [x] 系统托盘
 - [ ] OIDC 登录 + refresh token 自动续期
