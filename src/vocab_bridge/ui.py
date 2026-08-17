@@ -6,7 +6,9 @@ from tkinter import messagebox
 
 from .api import MaiMemoAuthError, MaiMemoClient, MaiMemoError, VocabularyNotFoundError
 from .config import get_token, save_token
+from .scheduler import SmartStudyRouter
 from .text import looks_like_single_word, normalize_selection
+from .wordbook import CurrentWordbook
 
 
 class TokenDialog(tk.Toplevel):
@@ -80,35 +82,38 @@ class CaptureDialog(tk.Toplevel):
 
         row = tk.Frame(body)
         row.pack(fill="x")
-        self.add_btn = tk.Button(row, text="加入学习规划", width=15, command=lambda: self._submit(False))
-        self.add_btn.pack(side="left")
-        self.advance_btn = tk.Button(row, text="加入并提前复习", width=16, command=lambda: self._submit(True))
-        self.advance_btn.pack(side="left", padx=(8, 0))
+        self.sync_btn = tk.Button(row, text="按规则同步", width=15, command=self._submit)
+        self.sync_btn.pack(side="left")
         tk.Button(row, text="取消", width=9, command=self.destroy).pack(side="right")
 
         self.status_var = tk.StringVar(value="")
-        tk.Label(body, textvariable=self.status_var, anchor="w").pack(fill="x", pady=(10, 0))
+        tk.Label(body, textvariable=self.status_var, anchor="w", wraplength=410, justify="left").pack(fill="x", pady=(10, 0))
+        self.bind("<Return>", lambda _e: self._submit())
         self.bind("<Escape>", lambda _e: self.destroy())
         self._place_near_pointer()
 
     @staticmethod
     def _initial_hint(text: str) -> str:
+        wordbook = CurrentWordbook()
+        book_hint = "已启用当前词书过滤。" if wordbook.configured else "当前词书过滤未配置。"
         if not text:
-            return "没有读取到选中文字。可直接在上方输入单词。"
+            return f"没有读取到选中文字，可直接输入。{book_hint}"
         if looks_like_single_word(text):
-            return "确认后会直接写入墨墨学习规划。"
-        return "当前选择包含空格或非单词字符，可先编辑成一个英文单词再提交。"
+            return f"程序会自动判断：已在记忆规划→提前复习；新词→加入记忆。{book_hint}"
+        return "当前选择包含空格或非单词字符，请先编辑成一个英文单词再提交。"
 
     def _set_busy(self, busy: bool):
-        state = "disabled" if busy else "normal"
-        self.add_btn.config(state=state)
-        self.advance_btn.config(state=state)
+        self.sync_btn.config(state="disabled" if busy else "normal")
 
-    def _submit(self, advance: bool):
+    def _submit(self):
         word = normalize_selection(self.word_var.get())
         if not word:
             self.status_var.set("请输入一个单词。")
             return
+        if not looks_like_single_word(word):
+            self.status_var.set("请只保留一个英文单词。")
+            return
+
         token = get_token()
         if not token:
             if self.on_need_token:
@@ -117,12 +122,12 @@ class CaptureDialog(tk.Toplevel):
             return
 
         self._set_busy(True)
-        self.status_var.set("正在同步…")
+        self.status_var.set("正在查询学习状态…")
 
         def worker():
             try:
-                result = MaiMemoClient(token).add_word(word, advance=advance)
-                self.after(0, lambda: self._success(result.added_count, advance))
+                result = SmartStudyRouter(MaiMemoClient(token)).process(word)
+                self.after(0, lambda: self._result(result.message, result.close_after_ms))
             except MaiMemoAuthError as exc:
                 message = str(exc)
                 self.after(0, lambda msg=message: self._error(msg, need_token=True))
@@ -135,11 +140,11 @@ class CaptureDialog(tk.Toplevel):
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _success(self, added_count: int, advance: bool):
-        action = "已加入并提前复习" if advance else "已加入学习规划"
-        suffix = "" if added_count else "（可能已在学习规划中）"
-        self.status_var.set(f"✓ {action}{suffix}")
-        self.after(900, self.destroy)
+    def _result(self, message: str, close_after_ms: int | None):
+        self._set_busy(False)
+        self.status_var.set(message)
+        if close_after_ms is not None:
+            self.after(close_after_ms, self.destroy)
 
     def _error(self, message: str, need_token: bool = False):
         self._set_busy(False)
